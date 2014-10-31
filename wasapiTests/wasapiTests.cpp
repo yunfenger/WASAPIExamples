@@ -25,12 +25,16 @@ using namespace std;
 	if ((punk) != NULL) \
 		{ (punk)->Release(); (punk) = NULL;}
 
-//////////////////////////////////////////////////////////////////////////////
 
 const CLSID CLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnumerator);
 const IID IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
 const IID IID_IAudioClient = __uuidof(IAudioClient);
 const IID IID_IAudioRenderClient = __uuidof(IAudioRenderClient);
+
+
+/////////////////////////////////////////////////////////////////////////////
+
+const IID IID_IAudioCaptureClient = __uuidof(IAudioCaptureClient);
 
 typedef struct MyAudioSource {
 	float sineFrequency_ = 880.0;
@@ -81,7 +85,6 @@ HRESULT PlayAudioStream(MyAudioSource* pMySource)
 	BYTE* pData = nullptr;
 	DWORD flags = 0;
 
-	EXIT_ON_ERROR(CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY));
 
 	EXIT_ON_ERROR(CoCreateInstance(
 			CLSID_MMDeviceEnumerator,
@@ -166,11 +169,125 @@ Exit:
 
 
 
+typedef struct MyAudioSink {
+	WAVEFORMATEX* pwfx_ = nullptr;
+
+	void setFormat(WAVEFORMATEX* pwfx) {
+		pwfx_ = pwfx;
+	}
+
+	void copyData(BYTE* pData, UINT32 numFramesAvailable, BOOL* bDone) {
+		float* out = (float*)pData;
+
+		for (int frames = 0; frames < numFramesAvailable * 2; ++frames) {
+			printf("%f ", out[frames]);
+		}
+		printf("\n");
+	}
+
+} MyAudioSink;
+
+
+HRESULT RecordAudioStream(MyAudioSink *pMySink)
+{
+	HRESULT hr;
+	REFERENCE_TIME hnsRequestedDuration = REFTIMES_PER_SEC;
+	REFERENCE_TIME hnsActualDuration;
+	UINT32 bufferFrameCount;
+	UINT32 numFramesAvailable;
+	IMMDeviceEnumerator* pEnumerator = NULL;
+	IMMDevice* pDevice = NULL;
+	IAudioClient* pAudioClient = NULL;
+	IAudioCaptureClient* pCaptureClient = NULL;
+	WAVEFORMATEX* pwfx = NULL;
+	UINT32 packetLength = 0;
+	BOOL bDone = FALSE;
+	BYTE* pData;
+	DWORD flags;
+
+	EXIT_ON_ERROR(CoCreateInstance(CLSID_MMDeviceEnumerator,
+		NULL,
+		CLSCTX_ALL,
+		IID_IMMDeviceEnumerator,
+		(void**)&pEnumerator));
+
+	EXIT_ON_ERROR(pEnumerator->GetDefaultAudioEndpoint(
+		eCapture, eConsole, &pDevice));
+
+	EXIT_ON_ERROR(pDevice->Activate(IID_IAudioClient,
+		CLSCTX_ALL,
+		NULL,
+		(void**)&pAudioClient));
+
+	EXIT_ON_ERROR(pAudioClient->GetMixFormat(&pwfx));
+
+	EXIT_ON_ERROR(pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
+		0,
+		hnsRequestedDuration,
+		0,
+		pwfx,
+		NULL));
+
+	EXIT_ON_ERROR(pAudioClient->GetBufferSize(&bufferFrameCount));
+
+	EXIT_ON_ERROR(pAudioClient->GetService(IID_IAudioCaptureClient,
+		(void**)&pCaptureClient));
+
+	pMySink->setFormat(pwfx);
+
+	hnsActualDuration = (double)REFTIMES_PER_SEC * bufferFrameCount / pwfx->nSamplesPerSec;
+
+	EXIT_ON_ERROR(pAudioClient->Start());
+
+	while (bDone == FALSE)
+	{
+		Sleep(hnsActualDuration / REFTIMES_PER_MILLISEC / 2);
+
+		EXIT_ON_ERROR(pCaptureClient->GetNextPacketSize(&packetLength));
+
+		while (packetLength != 0)
+		{
+			EXIT_ON_ERROR(pCaptureClient->GetBuffer(&pData,
+				&numFramesAvailable,
+				&flags,
+				NULL,
+				NULL));
+
+			if (flags & AUDCLNT_BUFFERFLAGS_SILENT)
+				pData = NULL;
+
+			pMySink->copyData(pData, numFramesAvailable, &bDone);
+
+			EXIT_ON_ERROR(pCaptureClient->ReleaseBuffer(numFramesAvailable));
+
+			EXIT_ON_ERROR(pCaptureClient->GetNextPacketSize(&packetLength));
+
+		}
+	}
+
+	EXIT_ON_ERROR(pAudioClient->Stop());
+
+Exit:
+	CoTaskMemFree(pwfx);
+	SAFE_RELEASE(pEnumerator)
+	SAFE_RELEASE(pDevice)
+	SAFE_RELEASE(pAudioClient)
+	SAFE_RELEASE(pCaptureClient)
+
+	return 0;
+}
+
+
 int _tmain(int argc, _TCHAR* argv[])
 {
-	MyAudioSource pMySource;
-	PlayAudioStream(&pMySource);
 
+	CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY);
+
+	MyAudioSink pMySink;
+	RecordAudioStream(&pMySink);
+
+	//MyAudioSource pMySource;
+	//PlayAudioStream(&pMySource);
 
 	cout << "Press enter to exit." << endl;
 	getchar();
